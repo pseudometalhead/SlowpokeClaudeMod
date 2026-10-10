@@ -10,7 +10,11 @@ A Claude Code mod that adds a slowpoke pet to your session.
   - **Timing:** press Stop! while the marker is in the middle of the track. A perfect stop gives the most happiness.
 - **Evolve** as you spend tokens. Every turn adds its input, output and cache-write tokens to his growth: Baby, Slowpoke, Elder, Ancient.
 
-He lives in a pixel-art band above the prompt, with Feed, Clean and Play buttons. He animates: he blinks when idle, bounces when happy or playing, chews when fed, sparkles when cleaned, sleeps after five minutes without you, and wakes when you send a prompt. He speaks in a bubble above his head. His face shows his mood, and his shell, crown and sparkles appear as he evolves.
+He lives in a pixel-art band above the prompt, with Feed, Clean and Play buttons. - **Coins:** earned by winning games, by cleaning up, and by every 10,000 tokens Claude spends on the session.
+- **Shop** (the Shop button): buy a flower, bow, shades or top hat with coins. Buy once, then wear or take off as you like. He wears them in the band.
+- **Reactions to Claude's tools:** a failed command makes him gasp, a permission denial makes him say so, and a clean Edit or Write makes him cheer. A turn with many tool calls makes him tired and sweaty.
+
+He animates: he blinks when idle, bounces when happy or playing, chews when fed, sparkles when cleaned, sleeps after five minutes without you, and wakes when you send a prompt. He speaks in a bubble above his head. His face shows his mood, and his shell, crown and sparkles appear as he evolves.
 
 `/slowpoke` prints his status, and the status line shows a one-line summary.
 

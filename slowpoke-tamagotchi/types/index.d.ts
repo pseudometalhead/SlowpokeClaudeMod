@@ -7,12 +7,20 @@ export type Pet = {
   tokens: number
   /** When the stats were last brought up to date, in ms since the epoch. */
   updatedAt: number
+  /** Coins, earned by games, cleaning and every 10,000 tokens. */
+  coins: number
+  /** Shop items he has bought. */
+  owned: ItemId[]
+  /** Shop items he is wearing right now. */
+  wearing: ItemId[]
 }
+
+export type ItemId = 'flower' | 'bow' | 'shades' | 'hat'
 
 /** What the band is doing right now. `tick` advances every half second. */
 export type Anim = {
   tick: number
-  act: 'eat' | 'clean' | 'play' | 'evolve' | null
+  act: 'eat' | 'clean' | 'play' | 'evolve' | 'gasp' | 'cheer' | null
   actUntil: number
   bubble: string | null
   bubbleUntil: number
@@ -22,12 +30,14 @@ export type Anim = {
   food: FoodId | null
   /** Whether the food menu is showing in place of the care buttons. */
   isMenuOpen: boolean
+  /** Tool calls so far in the current turn; many of them make him tired. */
+  toolCalls: number
 }
 
 export type FoodId = 'berry' | 'apple' | 'honey' | 'lettuce' | 'lemon'
 
-/** Which game the band is showing: `off` for the care buttons. */
-export type GameMode = 'off' | 'menu' | 'cups' | 'rps' | 'timing'
+/** Which game, or the shop, the band is showing: `off` for the care buttons. */
+export type GameMode = 'off' | 'menu' | 'cups' | 'rps' | 'timing' | 'shop'
 
 export type Game = {
   mode: GameMode

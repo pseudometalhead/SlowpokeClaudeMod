@@ -1,11 +1,23 @@
 import { atom, read, update } from 'claude-code'
 import type { Hook, Register } from 'claude-code'
 
-import type { Anim, FoodId, Game, Pet } from '../types'
+import type { Anim, FoodId, Game, ItemId, Pet } from '../types'
 
 type Engine = Parameters<Hook<'turn.complete'>>[0]
 type Care = 'clean'
-type Pose = 'idle' | 'blink' | 'happy' | 'grumpy' | 'sleep' | 'eat' | 'clean' | 'play' | 'evolve'
+type Pose =
+  | 'idle'
+  | 'blink'
+  | 'happy'
+  | 'grumpy'
+  | 'sleep'
+  | 'eat'
+  | 'clean'
+  | 'play'
+  | 'evolve'
+  | 'gasp'
+  | 'cheer'
+  | 'tired'
 
 const pet = atom({ plugin: 'slowpoke-tamagotchi', key: 'pet' } as const, null as Pet | null)
 const anim = atom({ plugin: 'slowpoke-tamagotchi', key: 'anim' } as const, {
@@ -17,6 +29,7 @@ const anim = atom({ plugin: 'slowpoke-tamagotchi', key: 'anim' } as const, {
   lastAct: 0,
   food: null,
   isMenuOpen: false,
+  toolCalls: 0,
 } as Anim)
 
 // The menu. Each food fills him by a different amount and changes his mood.
@@ -29,6 +42,15 @@ const FOODS: Record<FoodId, { label: string; hunger: number; happy: number; colo
 }
 const FOOD_IDS = Object.keys(FOODS) as FoodId[]
 const isFood = (word: string): word is FoodId => word in FOODS
+
+// The shop. Items are worn on his head, face or body.
+const ITEMS: Record<ItemId, { label: string; price: number }> = {
+  flower: { label: 'Flower', price: 8 },
+  bow: { label: 'Bow', price: 10 },
+  shades: { label: 'Shades', price: 15 },
+  hat: { label: 'Top hat', price: 25 },
+}
+const ITEM_IDS = Object.keys(ITEMS) as ItemId[]
 
 const game = atom({ plugin: 'slowpoke-tamagotchi', key: 'game' } as const, {
   mode: 'off',
@@ -44,6 +66,8 @@ const MINUTE = 60_000
 const MAX_MINUTES = 7 * 24 * 60
 const TICK_MS = 500
 const SLEEP_AFTER = 5 * MINUTE
+const TIRED_AT = 15 // tool calls in one turn before he gets tired
+const COIN_EVERY = 10_000 // tokens per coin
 const STAGES = [
   { from: 0, name: 'Baby Slowpoke' },
   { from: 200_000, name: 'Slowpoke' },
@@ -53,7 +77,8 @@ const STAGES = [
 
 // Pixel art. One character is one pixel; two pixel rows make one terminal row.
 // `.` is transparent. `k` outline, `p` pink, `c` cream belly, `w` eye white.
-// Overlays add `g` shell, `y` gold, `r` berry, `x` sparkle, `z` sleep, `b` poop.
+// Overlays add `g` shell, `y` gold, `r` berry and bow, `x` sparkle, `z` sleep,
+// `b` poop, `s` sweat, and the shop items.
 const SPRITE = [
   '................',
   '.....kkkkk......',
@@ -77,6 +102,32 @@ const FACES: Partial<Record<Pose, [string, string]>> = {
   sleep: [SLEEPY[4], SLEEPY[5]],
   happy: ['..kpkppppppkpk..', '..kppppppppppk..'],
   grumpy: ['..kkkkppppkkkk..', SPRITE[5]],
+  gasp: ['..kpwwppppwwpk..', '..kpwwppppwwpk..'],
+  tired: ['..kpkkppppkkpk..', SPRITE[5]],
+}
+
+// What each shop item paints on the sprite. Runs after the face, so shades win.
+const WEAR: Record<ItemId, (s: string[][]) => void> = {
+  flower: s => {
+    s[1][2] = 'v'
+    s[2][1] = 'v'
+    s[2][3] = 'v'
+    s[3][2] = 'v'
+    s[2][2] = 'y'
+  },
+  bow: s => {
+    s[1][12] = 'r'
+    s[1][13] = 'r'
+    s[2][12] = 'r'
+    s[2][13] = 'r'
+  },
+  shades: s => {
+    for (let x = 2; x <= 13; x++) s[4][x] = 'k'
+  },
+  hat: s => {
+    for (let x = 6; x <= 9; x++) s[0][x] = 'k'
+    for (let x = 5; x <= 10; x++) s[1][x] = 'k'
+  },
 }
 
 const WIDTH = 26
@@ -97,6 +148,7 @@ const PALETTE: Record<string, number> = {
   a: 0x7ddc5a,
   h: 0xf2b134,
   l: 0xf7f060,
+  s: 0x7fd4ff,
 }
 const DEFAULT_COLOR = 0x01000000
 
@@ -111,7 +163,13 @@ const hatch = (now: number): Pet => ({
   poop: 0,
   tokens: 0,
   updatedAt: now,
+  coins: 0,
+  owned: [],
+  wearing: [],
 })
+
+// A saved pet from an older version may lack the newer fields.
+const restore = (saved: Partial<Pet>): Pet => ({ ...hatch(0), ...saved }) as Pet
 
 let stopTicker: (() => void) | undefined
 
@@ -139,7 +197,7 @@ function decay(p: Pet, now: number): Pet {
 function care(p: Pet): { pet: Pet; text: string } {
   if (p.poop === 0) return { pet: p, text: 'nothing to clean... *smug*' }
   return {
-    pet: { ...p, poop: 0, happiness: clamp(p.happiness + 5) },
+    pet: { ...p, poop: 0, happiness: clamp(p.happiness + 5), coins: p.coins + 1 },
     text: 'ahh, much better',
   }
 }
@@ -154,7 +212,7 @@ function feed(p: Pet, food: FoodId): { pet: Pet; text: string } {
 }
 
 const statusLine = (p: Pet) =>
-  `${stageOf(p.tokens)} · full ${p.hunger} · happy ${p.happiness} · poop ${p.poop}`
+  `${stageOf(p.tokens)} · full ${p.hunger} · happy ${p.happiness} · poop ${p.poop} · coins ${p.coins}`
 
 const bar = (n: number) => '█'.repeat(Math.round(n / 10)).padEnd(10, '░')
 
@@ -169,13 +227,14 @@ const mood = (p: Pet) => {
 function poseOf(p: Pet, a: Anim, now: number): Pose {
   if (a.act && a.tick < a.actUntil) return a.act
   if (now - a.lastAct > SLEEP_AFTER) return 'sleep'
+  if (a.toolCalls >= TIRED_AT) return 'tired'
   if (p.hunger === 0 || p.happiness < 30) return 'grumpy'
   if (p.happiness >= 70) return 'happy'
   return a.tick % 16 >= 14 ? 'blink' : 'idle'
 }
 
 // The whole band as pixels: the sprite in its pose, its evolution overlays,
-// the pose's effects, and the poop piles on the ground.
+// the shop items he wears, the pose's effects, and the poop piles on the ground.
 function compose(p: Pet, a: Anim, now: number): string[] {
   const pose = poseOf(p, a, now)
   const flip = a.tick % 2 === 0
@@ -196,6 +255,8 @@ function compose(p: Pet, a: Anim, now: number): string[] {
     sprite[0][8] = 'y'
     sprite[0][10] = 'y'
   }
+  for (const item of p.wearing) WEAR[item](sprite)
+
   if (pose === 'eat') {
     const mouth = flip ? [6, 7, 8, 9] : [7, 8]
     for (const x of mouth) sprite[8][x] = 'k'
@@ -208,7 +269,8 @@ function compose(p: Pet, a: Anim, now: number): string[] {
   }
 
   const grid: string[][] = Array.from({ length: ROWS }, () => Array(WIDTH).fill('.'))
-  const bob = pose === 'play' || pose === 'happy' ? (flip ? 0 : TOP) : TOP
+  const isBouncing = pose === 'play' || pose === 'happy' || pose === 'cheer'
+  const bob = isBouncing ? (flip ? 0 : TOP) : TOP
   sprite.forEach((row, y) =>
     row.forEach((ch, x) => {
       if (ch !== '.') grid[y + bob][x] = ch
@@ -239,12 +301,21 @@ function compose(p: Pet, a: Anim, now: number): string[] {
     }
   }
 
+  if (pose === 'gasp') {
+    for (const y of [0, 1, 3]) put(y, 23, 'r')
+  }
+
+  if (pose === 'tired') {
+    put(7, 22, 's')
+    put(8, 22, 's')
+  }
+
   if (pose === 'clean') {
     const spots = flip ? [[8, 18], [6, 23]] : [[10, 15], [9, 24]]
     for (const [y, x] of spots) put(y, x, 'x')
   }
 
-  if (pose === 'evolve') {
+  if (pose === 'evolve' || pose === 'cheer') {
     const colour = flip ? 'x' : 'y'
     for (const [y, x] of [[0, 0], [0, 25], [6, 0], [6, 25], [13, 0], [13, 25]]) {
       put(y, x, colour)
@@ -317,19 +388,35 @@ async function say($: Engine, text: string): Promise<void> {
   await update($, anim, a => ({ ...a, bubble: text, bubbleUntil: a.tick + 12 }))
 }
 
+// A short reaction to something Claude did: a gasp or a cheer, and a line.
+async function react($: Engine, reaction: 'gasp' | 'cheer', text: string): Promise<void> {
+  await update($, anim, a => ({
+    ...a,
+    act: reaction,
+    actUntil: a.tick + 4,
+    bubble: text,
+    bubbleUntil: a.tick + 8,
+  }))
+}
+
 // The Timing marker sweeps 0 to 10 and back, one step per tick.
 const markerAt = (t: number) => {
   const m = ((t % 20) + 20) % 20
   return m <= 10 ? m : 20 - m
 }
 
-// Ends a game: it costs a little hunger, moves his happiness, and he says a line.
-async function finishGame($: Engine, happy: number, text: string): Promise<void> {
+// Ends a game: it costs a little hunger, moves his happiness, pays coins, and he says a line.
+async function finishGame($: Engine, happy: number, coins: number, text: string): Promise<void> {
   const now = await $.clock.now()
   const out = {} as { pet: Pet }
   await update($, pet, prev => {
     const base = decay(prev ?? hatch(now), now)
-    out.pet = { ...base, hunger: clamp(base.hunger - 3), happiness: clamp(base.happiness + happy) }
+    out.pet = {
+      ...base,
+      hunger: clamp(base.hunger - 3),
+      happiness: clamp(base.happiness + happy),
+      coins: base.coins + coins,
+    }
     return out.pet
   })
   await $.store.set(STORE_KEY, out.pet)
@@ -364,6 +451,7 @@ async function pickCup($: Engine, cup: number): Promise<void> {
   await finishGame(
     $,
     hit ? 10 : 1,
+    hit ? 5 : 1,
     hit ? 'found it! *happy wobble*' : `wrong cup... it was the ${CUPS[g.ball].toLowerCase()} one`,
   )
 }
@@ -373,14 +461,56 @@ async function throwMove($: Engine, move: number): Promise<void> {
   const bot = Math.floor(Math.random() * 3)
   const result = (move - bot + 3) % 3
   const verdict = ['a tie, again!', 'you win! *proud*', 'I win! hehe'][result]
-  await finishGame($, [4, 10, 2][result], `I threw ${MOVES[bot].toLowerCase()}... ${verdict}`)
+  await finishGame(
+    $,
+    [4, 10, 2][result],
+    [2, 5, 1][result],
+    `I threw ${MOVES[bot].toLowerCase()}... ${verdict}`,
+  )
 }
 
 async function stopTiming($: Engine): Promise<void> {
   const a = await read($, anim)
   const g = await read($, game)
   const isHit = [4, 5, 6].includes(markerAt(a.tick - g.startTick))
-  await finishGame($, isHit ? 15 : 2, isHit ? 'PERFECT! *sparkle*' : 'almost...')
+  await finishGame($, isHit ? 15 : 2, isHit ? 5 : 1, isHit ? 'PERFECT! *sparkle*' : 'almost...')
+}
+
+const shopLabel = (p: Pet, id: ItemId) => {
+  const item = ITEMS[id]
+  if (!p.owned.includes(id)) return `${item.label} ${item.price}c`
+  return p.wearing.includes(id) ? `take off ${item.label}` : `wear ${item.label}`
+}
+
+// Buys an item the first time, then wears or takes it off.
+async function shopItem($: Engine, id: ItemId): Promise<void> {
+  const now = await $.clock.now()
+  const out = {} as { pet: Pet; text: string }
+  await update($, pet, prev => {
+    const base = decay(prev ?? hatch(now), now)
+    const item = ITEMS[id]
+    if (base.wearing.includes(id)) {
+      out.pet = { ...base, wearing: base.wearing.filter(worn => worn !== id) }
+      out.text = `${item.label.toLowerCase()} off. *blink*`
+    } else if (base.owned.includes(id)) {
+      out.pet = { ...base, wearing: [...base.wearing, id] }
+      out.text = `ooh, ${item.label.toLowerCase()}!`
+    } else if (base.coins >= item.price) {
+      out.pet = {
+        ...base,
+        coins: base.coins - item.price,
+        owned: [...base.owned, id],
+        wearing: [...base.wearing, id],
+      }
+      out.text = `new ${item.label.toLowerCase()}! *twirl*`
+    } else {
+      out.pet = base
+      out.text = `not enough coins for the ${item.label.toLowerCase()}`
+    }
+    return out.pet
+  })
+  await $.store.set(STORE_KEY, out.pet)
+  await say($, out.text)
 }
 
 export const register: Register = on => {
@@ -390,9 +520,9 @@ export const register: Register = on => {
     await $.command.register({ name: 'slowpoke-clean', description: 'Clean up after your Slowpoke' })
     await $.command.register({ name: 'slowpoke-play', description: 'Play with your Slowpoke' })
 
-    const saved = (await $.store.get(STORE_KEY)) as Pet | undefined
+    const saved = (await $.store.get(STORE_KEY)) as Partial<Pet> | undefined
     const now = await $.clock.now()
-    const start = saved ? decay(saved, now) : hatch(now)
+    const start = saved ? decay(restore(saved), now) : hatch(now)
     await update($, pet, () => start)
     await update($, anim, a => ({ ...a, lastAct: now }))
     $.ui.status(statusLine(start))
@@ -415,6 +545,24 @@ export const register: Register = on => {
     }))
 
     return next(e)
+  })
+
+  // Claude's own tools: a failure makes him gasp, a clean edit makes him cheer,
+  // and a long run of tools makes him tired (see poseOf).
+  on('tool.call', async ($, e, next) => {
+    const now = await $.clock.now()
+    await update($, anim, a => ({ ...a, lastAct: now, toolCalls: a.toolCalls + 1 }))
+
+    const ran = await next(e)
+    if (ran.deny !== undefined) {
+      await react($, 'gasp', 'hey, not allowed?')
+    } else if (ran.isError === true) {
+      await react($, 'gasp', e.tool === 'Bash' ? 'gasp! that one broke' : 'oh no...')
+    } else if (e.tool === 'Edit' || e.tool === 'Write') {
+      await react($, 'cheer', 'good, good!')
+    }
+
+    return ran
   })
 
   on('command.run', { command: 'slowpoke' }, async $ => {
@@ -445,39 +593,43 @@ export const register: Register = on => {
 
   on('turn.complete', async ($, e, next) => {
     const now = await $.clock.now()
+    const out = {} as { pet: Pet; evolvedTo?: string; coins: number }
     if (e.usage) {
       const spent =
         e.usage.input_tokens + e.usage.output_tokens + e.usage.cache_creation_input_tokens
-      const out = {} as { pet: Pet; before: string; after: string }
       await update($, pet, prev => {
         const base = decay(prev ?? hatch(now), now)
-        out.before = stageOf(base.tokens)
-        out.pet = { ...base, tokens: base.tokens + spent }
-        out.after = stageOf(out.pet.tokens)
+        const tokens = base.tokens + spent
+        const before = stageOf(base.tokens)
+        const after = stageOf(tokens)
+        out.coins = Math.floor(tokens / COIN_EVERY) - Math.floor(base.tokens / COIN_EVERY)
+        out.pet = { ...base, tokens, coins: base.coins + out.coins }
+        out.evolvedTo = before !== after ? after : undefined
         return out.pet
       })
       await $.store.set(STORE_KEY, out.pet)
-      const evolved = out.after !== out.before
-      if (evolved) $.ui.toast(`Slowpoke evolved into ${out.after}!`)
-      await update($, anim, a => ({
-        ...a,
-        lastAct: now,
-        ...(evolved
-          ? {
-              act: 'evolve',
-              actUntil: a.tick + 12,
-              bubble: `I feel different... ${out.after}!`,
-              bubbleUntil: a.tick + 16,
-            }
-          : {}),
-      }))
+      if (out.evolvedTo) $.ui.toast(`Slowpoke evolved into ${out.evolvedTo}!`)
       $.ui.status(statusLine(out.pet))
     }
+
+    await update($, anim, a => ({
+      ...a,
+      lastAct: now,
+      toolCalls: 0,
+      ...(out.evolvedTo
+        ? {
+            act: 'evolve',
+            actUntil: a.tick + 12,
+            bubble: `I feel different... ${out.evolvedTo}!`,
+            bubbleUntil: a.tick + 16,
+          }
+        : {}),
+    }))
 
     return next(e)
   })
 
-  // The band above the prompt: the pixel slowpoke, his speech, his stats, and his care buttons.
+  // The band above the prompt: the pixel slowpoke, his speech, his stats, and his buttons.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const saved = await read($, pet)
     if (!saved) return next(e)
@@ -508,7 +660,7 @@ export const register: Register = on => {
           <Text>{pose === 'sleep' ? '🐌 zzz' : '🐌'}</Text>
         )}
         <Text dimColor>
-          {stageOf(p.tokens)} · {mood(p)} · full {bar(p.hunger)} · happy {bar(p.happiness)} · {p.tokens.toLocaleString()} tokens
+          {stageOf(p.tokens)} · {mood(p)} · full {bar(p.hunger)} · happy {bar(p.happiness)} · {p.tokens.toLocaleString()} tokens · {p.coins} coins
         </Text>
         {g.mode !== 'off' ? (
           g.mode === 'menu' ? (
@@ -532,6 +684,14 @@ export const register: Register = on => {
                 <Button key={move} label={move} onPress={() => throwMove($, i)} />
               ))}
               <Button key="cancel" label="Cancel" onPress={() => closeGames($)} />
+            </Box>
+          ) : g.mode === 'shop' ? (
+            <Box>
+              <Text>{`shop · ${p.coins} coins`}</Text>
+              {ITEM_IDS.map(id => (
+                <Button key={id} label={shopLabel(p, id)} onPress={() => shopItem($, id)} />
+              ))}
+              <Button key="back" label="Back" onPress={() => closeGames($)} />
             </Box>
           ) : (
             <Box>
@@ -567,6 +727,11 @@ export const register: Register = on => {
             />
             <Button key="clean" label="Clean" onPress={() => act($, 'clean')} />
             <Button key="play" label="Play ▸" onPress={() => openGames($)} />
+            <Button
+              key="shop"
+              label="Shop ▸"
+              onPress={() => update($, game, () => ({ ...NO_GAME, mode: 'shop' }))}
+            />
           </Box>
         )}
       </Box>
