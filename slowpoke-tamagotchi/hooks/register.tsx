@@ -1,16 +1,27 @@
 import { atom, read, update } from 'claude-code'
 import type { Hook, Register } from 'claude-code'
 
-import type { Pet } from '../types'
+import type { Anim, Pet } from '../types'
 
 type Engine = Parameters<Hook<'turn.complete'>>[0]
 type Care = 'feed' | 'clean' | 'play'
+type Pose = 'idle' | 'blink' | 'happy' | 'grumpy' | 'sleep' | 'eat' | 'clean' | 'play' | 'evolve'
 
 const pet = atom({ plugin: 'slowpoke-tamagotchi', key: 'pet' } as const, null as Pet | null)
+const anim = atom({ plugin: 'slowpoke-tamagotchi', key: 'anim' } as const, {
+  tick: 0,
+  act: null,
+  actUntil: 0,
+  bubble: null,
+  bubbleUntil: 0,
+  lastAct: 0,
+} as Anim)
 
 const STORE_KEY = 'pet'
 const MINUTE = 60_000
 const MAX_MINUTES = 7 * 24 * 60
+const TICK_MS = 500
+const SLEEP_AFTER = 5 * MINUTE
 const STAGES = [
   { from: 0, name: 'Baby Slowpoke' },
   { from: 200_000, name: 'Slowpoke' },
@@ -19,8 +30,8 @@ const STAGES = [
 ]
 
 // Pixel art. One character is one pixel; two pixel rows make one terminal row.
-// `.` is transparent. `k` outline, `p` pink, `c` cream belly, `w` eye white,
-// `b` poop.
+// `.` is transparent. `k` outline, `p` pink, `c` cream belly, `w` eye white.
+// Overlays add `g` shell, `y` gold, `r` berry, `x` sparkle, `z` sleep, `b` poop.
 const SPRITE = [
   '................',
   '.....kkkkk......',
@@ -38,21 +49,35 @@ const SPRITE = [
 const SLEEPY = SPRITE.map((row, i) =>
   i === 4 ? '..kpkkppppkkpk..' : i === 5 ? '..kppppppppppk..' : row,
 )
+// Faces by pose, rows 4 and 5 of the sprite.
+const FACES: Partial<Record<Pose, [string, string]>> = {
+  blink: [SLEEPY[4], SLEEPY[5]],
+  sleep: [SLEEPY[4], SLEEPY[5]],
+  happy: ['..kpkppppppkpk..', '..kppppppppppk..'],
+  grumpy: ['..kkkkppppkkkk..', SPRITE[5]],
+}
+
 const WIDTH = 26
+const ROWS = 14
+const TOP = 2 // where the sprite sits, in pixel rows, when still
 const PALETTE: Record<string, number> = {
   k: 0x2b2b3a,
   p: 0xf7a8c4,
   c: 0xfbe3c2,
   w: 0xffffff,
   b: 0x7a4a2a,
+  g: 0x9a6b3c,
+  y: 0xffd54a,
+  r: 0xff4d4d,
+  x: 0xd9fbff,
+  z: 0x9ad0ff,
 }
 const DEFAULT_COLOR = 0x01000000
 
 const clamp = (n: number) => Math.max(0, Math.min(100, n))
-const stageOf = (tokens: number) => {
-  const passed = STAGES.filter(s => tokens >= s.from)
-  return passed[passed.length - 1].name
-}
+const stageIndex = (tokens: number) => STAGES.filter(s => tokens >= s.from).length - 1
+const stageOf = (tokens: number) => STAGES[stageIndex(tokens)].name
+const ACT = { feed: 'eat', clean: 'clean', play: 'play' } as const
 
 const hatch = (now: number): Pet => ({
   hunger: 80,
@@ -61,6 +86,8 @@ const hatch = (now: number): Pet => ({
   tokens: 0,
   updatedAt: now,
 })
+
+let stopTicker: (() => void) | undefined
 
 // Brings the stats up to date with the clock. Works minute by minute so the
 // remainder of a partial minute carries over to the next call.
@@ -86,26 +113,26 @@ function decay(p: Pet, now: number): Pet {
 function care(p: Pet, what: Care): { pet: Pet; text: string } {
   if (what === 'feed') {
     if (p.hunger >= 100) {
-      return { pet: p, text: 'Slowpoke is too full to eat. He blinks slowly at you.' }
+      return { pet: p, text: 'too full... *blink*' }
     }
     return {
       pet: { ...p, hunger: clamp(p.hunger + 40), happiness: clamp(p.happiness + 3) },
-      text: 'Slowpoke munches a berry, very slowly.',
+      text: 'mmm, berry',
     }
   }
 
   if (what === 'clean') {
-    if (p.poop === 0) return { pet: p, text: 'Nothing to clean. Slowpoke looks smug.' }
+    if (p.poop === 0) return { pet: p, text: 'nothing to clean... *smug*' }
     return {
       pet: { ...p, poop: 0, happiness: clamp(p.happiness + 5) },
-      text: `Cleaned up ${p.poop} pile(s). Slowpoke sighs with relief.`,
+      text: 'ahh, much better',
     }
   }
 
-  if (p.hunger < 20) return { pet: p, text: 'Slowpoke is too hungry to play.' }
+  if (p.hunger < 20) return { pet: p, text: 'too hungry to play...' }
   return {
     pet: { ...p, hunger: clamp(p.hunger - 5), happiness: clamp(p.happiness + 15) },
-    text: 'Slowpoke rolls around happily, eventually.',
+    text: 'wheee... slowly',
   }
 }
 
@@ -122,17 +149,88 @@ const mood = (p: Pet) => {
   return 'meh'
 }
 
-// The sprite with its poop piles painted on the ground to its right.
-function frame(p: Pet): string[] {
-  const body = p.hunger === 0 || p.happiness < 30 ? SLEEPY : SPRITE
-  const grid = body.map(row => (row + '.'.repeat(WIDTH)).slice(0, WIDTH).split(''))
+function poseOf(p: Pet, a: Anim, now: number): Pose {
+  if (a.act && a.tick < a.actUntil) return a.act
+  if (now - a.lastAct > SLEEP_AFTER) return 'sleep'
+  if (p.hunger === 0 || p.happiness < 30) return 'grumpy'
+  if (p.happiness >= 70) return 'happy'
+  return a.tick % 16 >= 14 ? 'blink' : 'idle'
+}
+
+// The whole band as pixels: the sprite in its pose, its evolution overlays,
+// the pose's effects, and the poop piles on the ground.
+function compose(p: Pet, a: Anim, now: number): string[] {
+  const pose = poseOf(p, a, now)
+  const flip = a.tick % 2 === 0
+  const stage = stageIndex(p.tokens)
+
+  const sprite = SPRITE.map(row => row.split(''))
+  const face = FACES[pose]
+  if (face) {
+    sprite[4] = face[0].split('')
+    sprite[5] = face[1].split('')
+  }
+
+  if (stage >= 1) {
+    for (const row of [2, 3]) for (let x = 5; x <= 10; x++) sprite[row][x] = 'g'
+  }
+  if (stage >= 2) {
+    sprite[0][6] = 'y'
+    sprite[0][8] = 'y'
+    sprite[0][10] = 'y'
+  }
+  if (pose === 'eat') {
+    const mouth = flip ? [6, 7, 8, 9] : [7, 8]
+    for (const x of mouth) sprite[8][x] = 'k'
+    if (flip) {
+      sprite[6][13] = 'r'
+      sprite[6][14] = 'r'
+      sprite[7][14] = 'r'
+    }
+  }
+
+  const grid: string[][] = Array.from({ length: ROWS }, () => Array(WIDTH).fill('.'))
+  const bob = pose === 'play' || pose === 'happy' ? (flip ? 0 : TOP) : TOP
+  sprite.forEach((row, y) =>
+    row.forEach((ch, x) => {
+      if (ch !== '.') grid[y + bob][x] = ch
+    }),
+  )
+
+  const put = (y: number, x: number, ch: string) => {
+    if (y >= 0 && y < ROWS && x >= 0 && x < WIDTH) grid[y][x] = ch
+  }
 
   for (let i = 0; i < p.poop; i++) {
     const x = 17 + i * 3
-    grid[10][x + 1] = 'b'
-    grid[11][x] = 'b'
-    grid[11][x + 1] = 'b'
-    grid[11][x + 2] = 'b'
+    put(12, x + 1, 'b')
+    put(13, x, 'b')
+    put(13, x + 1, 'b')
+    put(13, x + 2, 'b')
+  }
+
+  if (pose === 'sleep') {
+    if (a.tick % 8 < 4) {
+      put(0, 20, 'z')
+      put(0, 21, 'z')
+      put(0, 22, 'z')
+      put(1, 22, 'z')
+    } else {
+      put(1, 21, 'z')
+      put(0, 23, 'z')
+    }
+  }
+
+  if (pose === 'clean') {
+    const spots = flip ? [[8, 18], [6, 23]] : [[10, 15], [9, 24]]
+    for (const [y, x] of spots) put(y, x, 'x')
+  }
+
+  if (pose === 'evolve') {
+    const colour = flip ? 'x' : 'y'
+    for (const [y, x] of [[0, 0], [0, 25], [6, 0], [6, 25], [13, 0], [13, 25]]) {
+      put(y, x, colour)
+    }
   }
 
   return grid.map(row => row.join(''))
@@ -182,6 +280,14 @@ async function act($: Engine, what: Care): Promise<string> {
     return done.pet
   })
   await $.store.set(STORE_KEY, out.pet)
+  await update($, anim, a => ({
+    ...a,
+    act: ACT[what],
+    actUntil: a.tick + 6,
+    bubble: out.text,
+    bubbleUntil: a.tick + 12,
+    lastAct: now,
+  }))
   $.ui.status(statusLine(out.pet))
   return out.text
 }
@@ -197,7 +303,25 @@ export const register: Register = on => {
     const now = await $.clock.now()
     const start = saved ? decay(saved, now) : hatch(now)
     await update($, pet, () => start)
+    await update($, anim, a => ({ ...a, lastAct: now }))
     $.ui.status(statusLine(start))
+
+    stopTicker?.()
+    stopTicker = $.clock.every(TICK_MS, () => {
+      void update($, anim, a => ({ ...a, tick: a.tick + 1 }))
+    })
+
+    return next(e)
+  })
+
+  on('prompt.submit', async ($, e, next) => {
+    const now = await $.clock.now()
+    await update($, anim, a => ({
+      ...a,
+      lastAct: now,
+      bubble: 'hmm? oh, hi',
+      bubbleUntil: a.tick + 8,
+    }))
 
     return next(e)
   })
@@ -223,10 +347,10 @@ export const register: Register = on => {
   }))
 
   on('turn.complete', async ($, e, next) => {
+    const now = await $.clock.now()
     if (e.usage) {
       const spent =
         e.usage.input_tokens + e.usage.output_tokens + e.usage.cache_creation_input_tokens
-      const now = await $.clock.now()
       const out = {} as { pet: Pet; before: string; after: string }
       await update($, pet, prev => {
         const base = decay(prev ?? hatch(now), now)
@@ -236,33 +360,51 @@ export const register: Register = on => {
         return out.pet
       })
       await $.store.set(STORE_KEY, out.pet)
-      if (out.after !== out.before) $.ui.toast(`Slowpoke evolved into ${out.after}!`)
+      const evolved = out.after !== out.before
+      if (evolved) $.ui.toast(`Slowpoke evolved into ${out.after}!`)
+      await update($, anim, a => ({
+        ...a,
+        lastAct: now,
+        ...(evolved
+          ? {
+              act: 'evolve',
+              actUntil: a.tick + 12,
+              bubble: `I feel different... ${out.after}!`,
+              bubbleUntil: a.tick + 16,
+            }
+          : {}),
+      }))
       $.ui.status(statusLine(out.pet))
     }
 
     return next(e)
   })
 
-  // The band above the prompt: the pixel slowpoke, his stats, and his care buttons.
+  // The band above the prompt: the pixel slowpoke, his speech, his stats, and his care buttons.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const saved = await read($, pet)
     if (!saved) return next(e)
 
     const { Box, Button, Raster, Text } = $.ui.resolve(e)
-    const p = decay(saved, await $.clock.now())
-    const art = frame(p)
+    const now = await $.clock.now()
+    const a = await read($, anim)
+    const p = decay(saved, now)
+    const pose = poseOf(p, a, now)
+    const bubble =
+      a.tick < a.bubbleUntil && a.bubble ? a.bubble : pose === 'sleep' ? 'zzz' : null
 
     return (
       <Box flexDirection="column">
+        {bubble && <Text>{`💬 ${bubble}`}</Text>}
         {e.surface === 'terminal' ? (
           <Raster
             key="slowpoke"
             columns={WIDTH}
-            rows={art.length / 2}
-            cells={toCells(art)}
+            rows={ROWS / 2}
+            cells={toCells(compose(p, a, now))}
           />
         ) : (
-          <Text>{mood(p) === 'content' ? '🐌' : '🐌 zzz'}</Text>
+          <Text>{pose === 'sleep' ? '🐌 zzz' : '🐌'}</Text>
         )}
         <Text dimColor>
           {stageOf(p.tokens)} · {mood(p)} · full {bar(p.hunger)} · happy {bar(p.happiness)} · {p.tokens.toLocaleString()} tokens

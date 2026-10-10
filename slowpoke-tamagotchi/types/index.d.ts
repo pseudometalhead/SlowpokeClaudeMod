@@ -9,8 +9,19 @@ export type Pet = {
   updatedAt: number
 }
 
+/** What the band is doing right now. `tick` advances every half second. */
+export type Anim = {
+  tick: number
+  act: 'eat' | 'clean' | 'play' | 'evolve' | null
+  actUntil: number
+  bubble: string | null
+  bubbleUntil: number
+  /** When the person last did something, in ms since the epoch. */
+  lastAct: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    'slowpoke-tamagotchi': { pet: Pet | null }
+    'slowpoke-tamagotchi': { pet: Pet | null; anim: Anim }
   }
 }
