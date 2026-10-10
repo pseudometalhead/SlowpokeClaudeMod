@@ -29,6 +29,14 @@ hooks/register.tsx           commands, pixel band, animation ticker, turn accoun
 types/index.d.ts             state contract for the pet and its animation
 ```
 
+## Install
+
+```
+/plugin install slowpoke-tamagotchi --marketplace pseudometalhead/SlowpokeClaudeMod
+```
+
+Type this at the prompt of a terminal session, then `y` to add the marketplace and Enter to pick the user scope.
+
 ## Trying it
 
 ```

@@ -1,0 +1,14 @@
+{
+  "name": "slowpoke-mods",
+  "owner": {
+    "name": "pseudometalhead"
+  },
+  "plugins": [
+    {
+      "name": "slowpoke-tamagotchi",
+      "source": "./slowpoke-tamagotchi",
+      "description": "A slowpoke Tamagotchi: feed him, clean up after him, play games, buy hats, and watch him evolve as you spend tokens."
+    }
+  ],
+  "description": "Mods for Claude Code, starting with a slowpoke Tamagotchi."
+}
