@@ -1,6 +1,6 @@
 {
   "name": "slowpoke-tamagotchi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A slowpoke Tamagotchi: feed him, clean up his poop, play with him, and watch him evolve as you spend tokens.",
   "author": { "name": "Diana" },
   "types": "./types/index.d.ts"
