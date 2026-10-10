@@ -26,8 +26,19 @@ export type Anim = {
 
 export type FoodId = 'berry' | 'apple' | 'honey' | 'lettuce' | 'lemon'
 
+/** Which game the band is showing: `off` for the care buttons. */
+export type GameMode = 'off' | 'menu' | 'cups' | 'rps' | 'timing'
+
+export type Game = {
+  mode: GameMode
+  /** The cup, 0 to 2, that hides the berry in Cups. */
+  ball: number
+  /** The tick the current game started on; Timing reads its marker from it. */
+  startTick: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    'slowpoke-tamagotchi': { pet: Pet | null; anim: Anim }
+    'slowpoke-tamagotchi': { pet: Pet | null; anim: Anim; game: Game }
   }
 }

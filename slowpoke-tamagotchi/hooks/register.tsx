@@ -1,10 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { Hook, Register } from 'claude-code'
 
-import type { Anim, FoodId, Pet } from '../types'
+import type { Anim, FoodId, Game, Pet } from '../types'
 
 type Engine = Parameters<Hook<'turn.complete'>>[0]
-type Care = 'clean' | 'play'
+type Care = 'clean'
 type Pose = 'idle' | 'blink' | 'happy' | 'grumpy' | 'sleep' | 'eat' | 'clean' | 'play' | 'evolve'
 
 const pet = atom({ plugin: 'slowpoke-tamagotchi', key: 'pet' } as const, null as Pet | null)
@@ -29,6 +29,15 @@ const FOODS: Record<FoodId, { label: string; hunger: number; happy: number; colo
 }
 const FOOD_IDS = Object.keys(FOODS) as FoodId[]
 const isFood = (word: string): word is FoodId => word in FOODS
+
+const game = atom({ plugin: 'slowpoke-tamagotchi', key: 'game' } as const, {
+  mode: 'off',
+  ball: 0,
+  startTick: 0,
+} as Game)
+const CUPS = ['Left', 'Middle', 'Right']
+const MOVES = ['Rock', 'Paper', 'Scissors']
+const NO_GAME: Game = { mode: 'off', ball: 0, startTick: 0 }
 
 const STORE_KEY = 'pet'
 const MINUTE = 60_000
@@ -127,19 +136,11 @@ function decay(p: Pet, now: number): Pet {
   return { ...p, hunger, happiness, poop, updatedAt }
 }
 
-function care(p: Pet, what: Care): { pet: Pet; text: string } {
-  if (what === 'clean') {
-    if (p.poop === 0) return { pet: p, text: 'nothing to clean... *smug*' }
-    return {
-      pet: { ...p, poop: 0, happiness: clamp(p.happiness + 5) },
-      text: 'ahh, much better',
-    }
-  }
-
-  if (p.hunger < 20) return { pet: p, text: 'too hungry to play...' }
+function care(p: Pet): { pet: Pet; text: string } {
+  if (p.poop === 0) return { pet: p, text: 'nothing to clean... *smug*' }
   return {
-    pet: { ...p, hunger: clamp(p.hunger - 5), happiness: clamp(p.happiness + 15) },
-    text: 'wheee... slowly',
+    pet: { ...p, poop: 0, happiness: clamp(p.happiness + 5) },
+    text: 'ahh, much better',
   }
 }
 
@@ -293,7 +294,7 @@ async function act($: Engine, what: Care | FoodId): Promise<string> {
   const out = {} as { pet: Pet; text: string }
   await update($, pet, prev => {
     const base = decay(prev ?? hatch(now), now)
-    const done = isFood(what) ? feed(base, what) : care(base, what)
+    const done = isFood(what) ? feed(base, what) : care(base)
     out.pet = done.pet
     out.text = done.text
     return done.pet
@@ -310,6 +311,76 @@ async function act($: Engine, what: Care | FoodId): Promise<string> {
   }))
   $.ui.status(statusLine(out.pet))
   return out.text
+}
+
+async function say($: Engine, text: string): Promise<void> {
+  await update($, anim, a => ({ ...a, bubble: text, bubbleUntil: a.tick + 12 }))
+}
+
+// The Timing marker sweeps 0 to 10 and back, one step per tick.
+const markerAt = (t: number) => {
+  const m = ((t % 20) + 20) % 20
+  return m <= 10 ? m : 20 - m
+}
+
+// Ends a game: it costs a little hunger, moves his happiness, and he says a line.
+async function finishGame($: Engine, happy: number, text: string): Promise<void> {
+  const now = await $.clock.now()
+  const out = {} as { pet: Pet }
+  await update($, pet, prev => {
+    const base = decay(prev ?? hatch(now), now)
+    out.pet = { ...base, hunger: clamp(base.hunger - 3), happiness: clamp(base.happiness + happy) }
+    return out.pet
+  })
+  await $.store.set(STORE_KEY, out.pet)
+  await update($, anim, a => ({
+    ...a,
+    act: 'play',
+    actUntil: a.tick + 6,
+    bubble: text,
+    bubbleUntil: a.tick + 12,
+    lastAct: now,
+  }))
+  await update($, game, () => NO_GAME)
+  $.ui.status(statusLine(out.pet))
+}
+
+async function openGames($: Engine): Promise<void> {
+  const p = await read($, pet)
+  if (p && p.hunger < 20) return say($, 'too hungry to play...')
+  await update($, game, () => ({ ...NO_GAME, mode: 'menu' }))
+}
+
+const closeGames = ($: Engine) => update($, game, () => NO_GAME)
+
+async function startGame($: Engine, mode: 'cups' | 'rps' | 'timing'): Promise<void> {
+  const a = await read($, anim)
+  await update($, game, () => ({ mode, ball: Math.floor(Math.random() * 3), startTick: a.tick }))
+}
+
+async function pickCup($: Engine, cup: number): Promise<void> {
+  const g = await read($, game)
+  const hit = cup === g.ball
+  await finishGame(
+    $,
+    hit ? 10 : 1,
+    hit ? 'found it! *happy wobble*' : `wrong cup... it was the ${CUPS[g.ball].toLowerCase()} one`,
+  )
+}
+
+// Rock (0), Paper (1), Scissors (2). The result is 0 for a tie, 1 for his loss and 2 for his win.
+async function throwMove($: Engine, move: number): Promise<void> {
+  const bot = Math.floor(Math.random() * 3)
+  const result = (move - bot + 3) % 3
+  const verdict = ['a tie, again!', 'you win! *proud*', 'I win! hehe'][result]
+  await finishGame($, [4, 10, 2][result], `I threw ${MOVES[bot].toLowerCase()}... ${verdict}`)
+}
+
+async function stopTiming($: Engine): Promise<void> {
+  const a = await read($, anim)
+  const g = await read($, game)
+  const isHit = [4, 5, 6].includes(markerAt(a.tick - g.startTick))
+  await finishGame($, isHit ? 15 : 2, isHit ? 'PERFECT! *sparkle*' : 'almost...')
 }
 
 export const register: Register = on => {
@@ -366,9 +437,11 @@ export const register: Register = on => {
     text: await act($, 'clean'),
   }))
 
-  on('command.run', { command: 'slowpoke-play' }, async $ => ({
-    text: await act($, 'play'),
-  }))
+  on('command.run', { command: 'slowpoke-play' }, async $ => {
+    await openGames($)
+
+    return { text: 'Pick a game in the band above.' }
+  })
 
   on('turn.complete', async ($, e, next) => {
     const now = await $.clock.now()
@@ -412,7 +485,11 @@ export const register: Register = on => {
     const { Box, Button, Raster, Text } = $.ui.resolve(e)
     const now = await $.clock.now()
     const a = await read($, anim)
+    const g = await read($, game)
     const p = decay(saved, now)
+    const track = Array.from({ length: 11 }, (_, i) =>
+      i === markerAt(a.tick - g.startTick) ? '█' : i >= 4 && i <= 6 ? '▓' : '·',
+    ).join('')
     const pose = poseOf(p, a, now)
     const bubble =
       a.tick < a.bubbleUntil && a.bubble ? a.bubble : pose === 'sleep' ? 'zzz' : null
@@ -433,7 +510,37 @@ export const register: Register = on => {
         <Text dimColor>
           {stageOf(p.tokens)} · {mood(p)} · full {bar(p.hunger)} · happy {bar(p.happiness)} · {p.tokens.toLocaleString()} tokens
         </Text>
-        {a.isMenuOpen ? (
+        {g.mode !== 'off' ? (
+          g.mode === 'menu' ? (
+            <Box>
+              <Button key="cups" label="Cups" onPress={() => startGame($, 'cups')} />
+              <Button key="rps" label="Rock Paper Scissors" onPress={() => startGame($, 'rps')} />
+              <Button key="timing" label="Timing" onPress={() => startGame($, 'timing')} />
+              <Button key="back" label="Back" onPress={() => closeGames($)} />
+            </Box>
+          ) : g.mode === 'cups' ? (
+            <Box>
+              <Text>Which cup hides the berry?</Text>
+              {CUPS.map((cup, i) => (
+                <Button key={cup} label={cup} onPress={() => pickCup($, i)} />
+              ))}
+              <Button key="cancel" label="Cancel" onPress={() => closeGames($)} />
+            </Box>
+          ) : g.mode === 'rps' ? (
+            <Box>
+              {MOVES.map((move, i) => (
+                <Button key={move} label={move} onPress={() => throwMove($, i)} />
+              ))}
+              <Button key="cancel" label="Cancel" onPress={() => closeGames($)} />
+            </Box>
+          ) : (
+            <Box>
+              <Text>{track}</Text>
+              <Button key="stop" label="Stop!" onPress={() => stopTiming($)} />
+              <Button key="cancel" label="Cancel" onPress={() => closeGames($)} />
+            </Box>
+          )
+        ) : a.isMenuOpen ? (
           <Box>
             {FOOD_IDS.map(id => (
               <Button
@@ -459,7 +566,7 @@ export const register: Register = on => {
               onPress={() => update($, anim, prev => ({ ...prev, isMenuOpen: true }))}
             />
             <Button key="clean" label="Clean" onPress={() => act($, 'clean')} />
-            <Button key="play" label="Play" onPress={() => act($, 'play')} />
+            <Button key="play" label="Play ▸" onPress={() => openGames($)} />
           </Box>
         )}
       </Box>
