@@ -170,4 +170,21 @@ describe('the band', () => {
     expect(await band.find({ key: 'Rock' })).toBeUndefined()
     expect(await band.find({ key: 'feed' })).toBeDefined()
   })
+
+  test('draws the sprite as an SVG on mobile', async ($, on) => {
+    answerCommands(on)
+    mock.clock(on, { now: 0 })
+    mock.store(on, { pet: pet({}) })
+    await $.session.start(start())
+
+    const band = await $.ui.mount({
+      plugin: 'slowpoke-tamagotchi',
+      surface: 'mobile',
+      component: 'AbovePrompt',
+      props: { hasSurvey: false },
+    })
+
+    expect(await band.find({ key: 'feed' })).toBeDefined()
+    expect(JSON.stringify(await band.drawn())).toContain('<svg')
+  })
 })

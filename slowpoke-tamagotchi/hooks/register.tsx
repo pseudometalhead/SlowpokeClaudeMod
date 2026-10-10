@@ -359,6 +359,22 @@ function toCells(grid: string[]): string {
   return new Uint8Array(words.buffer).toBase64()
 }
 
+// The same pixels as an SVG, one rectangle per pixel, for the surfaces without a Raster.
+function toSvg(grid: string[]): string {
+  const rects: string[] = []
+  grid.forEach((row, y) =>
+    [...row].forEach((ch, x) => {
+      const colour = PALETTE[ch]
+      if (colour !== undefined) {
+        const hex = colour.toString(16).padStart(6, '0')
+        rects.push(`<rect x="${x}" y="${y}" width="1" height="1" fill="#${hex}"/>`)
+      }
+    }),
+  )
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${WIDTH} ${ROWS}" shape-rendering="crispEdges">${rects.join('')}</svg>`
+}
+
 // Runs one care action or one food. A food is eaten, and the rest are care.
 async function act($: Engine, what: Care | FoodId): Promise<string> {
   const now = await $.clock.now()
@@ -634,7 +650,7 @@ export const register: Register = on => {
     const saved = await read($, pet)
     if (!saved) return next(e)
 
-    const { Box, Button, Raster, Text } = $.ui.resolve(e)
+    const { Box, Button, Raster, Svg, Text } = $.ui.resolve(e)
     const now = await $.clock.now()
     const a = await read($, anim)
     const g = await read($, game)
@@ -657,7 +673,7 @@ export const register: Register = on => {
             cells={toCells(compose(p, a, now))}
           />
         ) : (
-          <Text>{pose === 'sleep' ? '🐌 zzz' : '🐌'}</Text>
+          <Svg source={toSvg(compose(p, a, now))} alt={`slowpoke, ${mood(p)}`} />
         )}
         <Text dimColor>
           {stageOf(p.tokens)} · {mood(p)} · full {bar(p.hunger)} · happy {bar(p.happiness)} · {p.tokens.toLocaleString()} tokens · {p.coins} coins
