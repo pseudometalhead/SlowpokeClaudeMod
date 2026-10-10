@@ -6,10 +6,9 @@ import type { Pet } from '../types'
 type Engine = Parameters<Hook<'turn.complete'>>[0]
 type Care = 'feed' | 'clean' | 'play'
 
-const PANE = 'slowpoke'
-const STORE_KEY = 'pet'
 const pet = atom({ plugin: 'slowpoke-tamagotchi', key: 'pet' } as const, null as Pet | null)
 
+const STORE_KEY = 'pet'
 const MINUTE = 60_000
 const MAX_MINUTES = 7 * 24 * 60
 const STAGES = [
@@ -18,6 +17,36 @@ const STAGES = [
   { from: 2_000_000, name: 'Elder Slowpoke' },
   { from: 10_000_000, name: 'Ancient Slowpoke' },
 ]
+
+// Pixel art. One character is one pixel; two pixel rows make one terminal row.
+// `.` is transparent. `k` outline, `p` pink, `c` cream belly, `w` eye white,
+// `b` poop.
+const SPRITE = [
+  '................',
+  '.....kkkkk......',
+  '....kppppppk....',
+  '...kppppppppk...',
+  '..kpwwppppwwpk..',
+  '..kpwkppppkwpk..',
+  '..kppppppppppk..',
+  '.kpppcccccccppk.',
+  '.kpppccccccpppk.',
+  '..kppppppppppk..',
+  '..kkk....kkk....',
+  '................',
+]
+const SLEEPY = SPRITE.map((row, i) =>
+  i === 4 ? '..kpkkppppkkpk..' : i === 5 ? '..kppppppppppk..' : row,
+)
+const WIDTH = 26
+const PALETTE: Record<string, number> = {
+  k: 0x2b2b3a,
+  p: 0xf7a8c4,
+  c: 0xfbe3c2,
+  w: 0xffffff,
+  b: 0x7a4a2a,
+}
+const DEFAULT_COLOR = 0x01000000
 
 const clamp = (n: number) => Math.max(0, Math.min(100, n))
 const stageOf = (tokens: number) => {
@@ -93,6 +122,56 @@ const mood = (p: Pet) => {
   return 'meh'
 }
 
+// The sprite with its poop piles painted on the ground to its right.
+function frame(p: Pet): string[] {
+  const body = p.hunger === 0 || p.happiness < 30 ? SLEEPY : SPRITE
+  const grid = body.map(row => (row + '.'.repeat(WIDTH)).slice(0, WIDTH).split(''))
+
+  for (let i = 0; i < p.poop; i++) {
+    const x = 17 + i * 3
+    grid[10][x + 1] = 'b'
+    grid[11][x] = 'b'
+    grid[11][x + 1] = 'b'
+    grid[11][x + 2] = 'b'
+  }
+
+  return grid.map(row => row.join(''))
+}
+
+// Packs pixels into a Raster: two pixel rows per cell, drawn with the upper
+// half block. Each cell is [codePoint, foreground, background], little-endian.
+function toCells(grid: string[]): string {
+  const columns = grid[0].length
+  const rows = grid.length / 2
+  const words = new Uint32Array(columns * rows * 3)
+
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < columns; c++) {
+      const top = PALETTE[grid[r * 2][c]]
+      const bottom = PALETTE[grid[r * 2 + 1][c]]
+      let glyph = 0x20
+      let fg = DEFAULT_COLOR
+      let bg = DEFAULT_COLOR
+
+      if (top !== undefined && bottom === undefined) {
+        glyph = 0x2580
+        fg = top
+      } else if (top === undefined && bottom !== undefined) {
+        glyph = 0x2584
+        fg = bottom
+      } else if (top !== undefined && bottom !== undefined) {
+        glyph = 0x2580
+        fg = top
+        bg = bottom
+      }
+
+      words.set([glyph, fg, bg], (r * columns + c) * 3)
+    }
+  }
+
+  return new Uint8Array(words.buffer).toBase64()
+}
+
 async function act($: Engine, what: Care): Promise<string> {
   const now = await $.clock.now()
   const out = {} as { pet: Pet; text: string }
@@ -109,7 +188,7 @@ async function act($: Engine, what: Care): Promise<string> {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'slowpoke', description: 'Show your Slowpoke in a pane' })
+    await $.command.register({ name: 'slowpoke', description: 'Show how your Slowpoke is doing' })
     await $.command.register({ name: 'slowpoke-feed', description: 'Feed your Slowpoke' })
     await $.command.register({ name: 'slowpoke-clean', description: 'Clean up after your Slowpoke' })
     await $.command.register({ name: 'slowpoke-play', description: 'Play with your Slowpoke' })
@@ -124,9 +203,11 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'slowpoke' }, async $ => {
-    await $.ui.open({ id: PANE, title: 'Slowpoke' })
+    const saved = await read($, pet)
+    const now = await $.clock.now()
+    const p = decay(saved ?? hatch(now), now)
 
-    return { text: 'Slowpoke pane opened.' }
+    return { text: `${statusLine(p)} · mood: ${mood(p)} · tokens ${p.tokens.toLocaleString()}` }
   })
 
   on('command.run', { command: 'slowpoke-feed' }, async $ => ({
@@ -162,22 +243,30 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
+  // The band above the prompt: the pixel slowpoke, his stats, and his care buttons.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const saved = await read($, pet)
-    if (!saved) return <Text dimColor>Hatching...</Text>
+    if (!saved) return next(e)
 
+    const { Box, Button, Raster, Text } = $.ui.resolve(e)
     const p = decay(saved, await $.clock.now())
+    const art = frame(p)
 
     return (
       <Box flexDirection="column">
-        <Text>{stageOf(p.tokens)}</Text>
-        <Text>{`   ____`}</Text>
-        <Text>{`__/ -  -\\__   ${p.poop > 0 ? '💩'.repeat(p.poop) : ''}`}</Text>
-        <Text>{`(____________)  is ${mood(p)}`}</Text>
-        <Text dimColor>{`full      ${bar(p.hunger)} ${p.hunger}`}</Text>
-        <Text dimColor>{`happy     ${bar(p.happiness)} ${p.happiness}`}</Text>
-        <Text dimColor>{`tokens    ${p.tokens.toLocaleString()}`}</Text>
+        {e.surface === 'terminal' ? (
+          <Raster
+            key="slowpoke"
+            columns={WIDTH}
+            rows={art.length / 2}
+            cells={toCells(art)}
+          />
+        ) : (
+          <Text>{mood(p) === 'content' ? '🐌' : '🐌 zzz'}</Text>
+        )}
+        <Text dimColor>
+          {stageOf(p.tokens)} · {mood(p)} · full {bar(p.hunger)} · happy {bar(p.happiness)} · {p.tokens.toLocaleString()} tokens
+        </Text>
         <Box>
           <Button key="feed" label="Feed" onPress={() => act($, 'feed')} />
           <Button key="clean" label="Clean" onPress={() => act($, 'clean')} />

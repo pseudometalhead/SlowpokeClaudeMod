@@ -7,7 +7,7 @@ A Claude Code mod that adds a slowpoke pet to your session.
 - **Play** with him (`/slowpoke-play`). He needs some energy first.
 - **Evolve** as you spend tokens. Every turn adds its input, output and cache-write tokens to his growth: Baby, Slowpoke, Elder, Ancient.
 
-`/slowpoke` opens his pane. The status line shows a one-line summary.
+He lives in a pixel-art band above the prompt, with Feed, Clean and Play buttons. `/slowpoke` prints his status, and the status line shows a one-line summary.
 
 His stats decay while you're away, up to a week's worth. Stats are kept across sessions with `$.store`.
 
@@ -16,7 +16,7 @@ His stats decay while you're away, up to a week's worth. Stats are kept across s
 ```
 .claude-plugin/plugin.json   manifest
 hooks/hooks.json             points at the hooks module
-hooks/register.tsx           commands, pane, turn accounting, decay
+hooks/register.tsx           commands, pixel band, turn accounting, decay
 types/index.d.ts             state contract for the pet
 ```
 
