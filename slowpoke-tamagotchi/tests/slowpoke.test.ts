@@ -78,7 +78,8 @@ describe('slowpoke', () => {
     expect(reply.text).toContain('No "pizza" on the menu')
   })
 
-  test('an hour away costs him ten hunger', async ($, on) => {
+  // Advancing an hour runs about 7,200 ticks, so this one needs more than the default 5 seconds.
+  test('an hour away costs him ten hunger', { timeoutMs: 30_000 }, async ($, on) => {
     answerCommands(on)
     const clock = mock.clock(on, { now: 0 })
     mock.store(on, { pet: pet({ hunger: 80 }) })
@@ -186,5 +187,24 @@ describe('the band', () => {
 
     expect(await band.find({ key: 'feed' })).toBeDefined()
     expect(JSON.stringify(await band.drawn())).toContain('<svg')
+  })
+
+  test('every food on the menu has its own picture on mobile', async ($, on) => {
+    answerCommands(on)
+    mock.clock(on, { now: 0 })
+    mock.store(on, { pet: pet({}) })
+    await $.session.start(start())
+
+    const band = await $.ui.mount({
+      plugin: 'slowpoke-tamagotchi',
+      surface: 'mobile',
+      component: 'AbovePrompt',
+      props: { hasSurvey: false },
+    })
+
+    await band.press({ key: 'feed' })
+    const drawn = JSON.stringify(await band.drawn())
+    expect(drawn.split('<svg').length - 1).toBeGreaterThanOrEqual(6)
+    expect(await band.find({ key: 'lemon' })).toBeDefined()
   })
 })

@@ -130,9 +130,238 @@ const WEAR: Record<ItemId, (s: string[][]) => void> = {
   },
 }
 
-const WIDTH = 26
-const ROWS = 14
-const TOP = 2 // where the sprite sits, in pixel rows, when still
+// Icons for every button and stat. Each is 8 pixels square: four terminal rows.
+const BERRY = [
+  '....m...',
+  '...eee..',
+  '..vvvvv.',
+  '.vvvvvvv',
+  '.vvvvvvv',
+  '.vvvvvvv',
+  '..vvvvv.',
+  '........',
+]
+const APPLE = [
+  '....m...',
+  '...eee..',
+  '..rrrrr.',
+  '.rrrrrrr',
+  '.rrrrrrr',
+  '.rrrrrrr',
+  '..rrrrr.',
+  '........',
+]
+const HONEY = [
+  '..mmmmm.',
+  '..kkkkk.',
+  '.nnnnnn.',
+  '.nhhhhn.',
+  '.nhhhhn.',
+  '.nhhhhn.',
+  '.nnnnnn.',
+  '........',
+]
+const LETTUCE = [
+  '........',
+  '.a.aa.a.',
+  'aaaaaaaa',
+  '.aaaaaa.',
+  'aaaaaaaa',
+  '.aaaaaa.',
+  '..eeee..',
+  '........',
+]
+const LEMON = [
+  '........',
+  '...e....',
+  '.llllll.',
+  'llllllll',
+  'llllllll',
+  '.llllll.',
+  '........',
+  '........',
+]
+const FLOWER = [
+  '..v..v..',
+  '.vvvvvv.',
+  '..vyyv..',
+  '.vvyyvv.',
+  '..vyyv..',
+  '.vvvvvv.',
+  '..v..v..',
+  '...e....',
+]
+const BOW = [
+  '........',
+  'rrr..rrr',
+  'rrrmmrrr',
+  'rrr..rrr',
+  '........',
+  '........',
+  '........',
+  '........',
+]
+const SHADES = [
+  '........',
+  '........',
+  'kkkkkkkk',
+  'kqqkkqqk',
+  'kqqkkqqk',
+  '.kk..kk.',
+  '........',
+  '........',
+]
+const HAT = [
+  '...kkk..',
+  '...kkk..',
+  '...kkk..',
+  '...rrr..',
+  '..kkkkk.',
+  '.kkkkkkk',
+  '........',
+  '........',
+]
+const CUP = [
+  '........',
+  'tttttttt',
+  'ffffffff',
+  '.ffffff.',
+  '.ffffff.',
+  '..ffff..',
+  '...tt...',
+  '........',
+]
+const ROCK = [
+  '........',
+  '........',
+  '..tttt..',
+  '.tffffft',
+  'tfffffft',
+  'tffffftt',
+  '.tttttt.',
+  '........',
+]
+const PAPER = [
+  '........',
+  '.iiiiii.',
+  '.iffffi.',
+  '.iiiiii.',
+  '.iffffi.',
+  '.iiiiii.',
+  '........',
+  '........',
+]
+const SCISSORS = [
+  'kk....kk',
+  '.kk..kk.',
+  '..kkkk..',
+  '...ff...',
+  '..kkkk..',
+  '.kk..kk.',
+  'kk....kk',
+  '........',
+]
+const STOPWATCH = [
+  '...kk...',
+  '..kkkk..',
+  '.kwwwwk.',
+  '.kwwkwk.',
+  '.kwwwwk.',
+  '..kkkk..',
+  '........',
+  '........',
+]
+const SPARKLE = [
+  '...x....',
+  '...x....',
+  '..xxx...',
+  'xxxxxxx.',
+  '..xxx...',
+  '...x....',
+  '...x....',
+  '........',
+]
+const BALL = [
+  '..rrrr..',
+  '.rrwwrrr',
+  'rrwrrrrr',
+  'rrrrrrrr',
+  'rrrrrrrr',
+  'rrrrrrrr',
+  '.rrrrrr.',
+  '..rrrr..',
+]
+const HEART = [
+  '........',
+  '.pp.pp..',
+  'pppppppp',
+  'pppppppp',
+  '.pppppp.',
+  '..pppp..',
+  '...pp...',
+  '........',
+]
+const COIN = [
+  '..kkkk..',
+  '.kyyyyk.',
+  'kyyyyyyk',
+  'kyyyyyyk',
+  'kyyyyyyk',
+  '.kyyyyk.',
+  '..kkkk..',
+  '........',
+]
+const FOOD_ART: Record<FoodId, string[]> = {
+  berry: BERRY,
+  apple: APPLE,
+  honey: HONEY,
+  lettuce: LETTUCE,
+  lemon: LEMON,
+}
+const SHOP_ART: Record<ItemId, string[]> = { flower: FLOWER, bow: BOW, shades: SHADES, hat: HAT }
+const MOVE_ART = [ROCK, PAPER, SCISSORS]
+
+// Three cups side by side, 28 pixels wide.
+const cupsArt = () => CUP.map((row, y) => [row, CUP[y], CUP[y]].join('  '))
+
+// The Timing track: a grey bar, the gold zone in the middle, and a red marker.
+// Each step is two pixels wide, so the marker's 11 positions fill 22 pixels.
+function timingArt(marker: number): string[] {
+  return Array.from({ length: 4 }, (_, y) =>
+    Array.from({ length: 22 }, (_, x) => {
+      const pos = Math.floor(x / 2)
+      if (pos === marker) return 'r'
+      if (y === 0 || y === 3) return '.'
+      return pos >= 4 && pos <= 6 ? 'y' : 'f'
+    }).join(''),
+  )
+}
+
+// Berry (hunger), heart (happiness) and coin, with a bar for each stat. 52 pixels wide.
+function statArt(p: Pet): string[] {
+  const grid: string[][] = Array.from({ length: 8 }, () => Array(52).fill('.'))
+  const paste = (art: string[], x0: number) =>
+    art.forEach((row, y) =>
+      [...row].forEach((ch, x) => {
+        if (ch !== '.') grid[y][x0 + x] = ch
+      }),
+    )
+  const meter = (value: number, x0: number, colour: string) => {
+    const filled = Math.round(value / 10)
+    for (let i = 0; i < 10; i++) {
+      for (const y of [2, 3, 4, 5]) grid[y][x0 + i] = i < filled ? colour : 'f'
+    }
+  }
+
+  paste(BERRY, 0)
+  meter(p.hunger, 10, 'a')
+  paste(HEART, 22)
+  meter(p.happiness, 32, 'p')
+  paste(COIN, 44)
+
+  return grid.map(row => row.join(''))
+}
+
 const PALETTE: Record<string, number> = {
   k: 0x2b2b3a,
   p: 0xf7a8c4,
@@ -149,8 +378,19 @@ const PALETTE: Record<string, number> = {
   h: 0xf2b134,
   l: 0xf7f060,
   s: 0x7fd4ff,
+  e: 0x3f8f3a,
+  f: 0xc9d6df,
+  t: 0x6b7b8c,
+  i: 0xf4ead0,
+  q: 0x4aa3df,
+  m: 0x6a4a2a,
+  n: 0xffd98a,
 }
 const DEFAULT_COLOR = 0x01000000
+
+const WIDTH = 26
+const ROWS = 14
+const TOP = 2 // where the sprite sits, in pixel rows, when still
 
 const clamp = (n: number) => Math.max(0, Math.min(100, n))
 const stageIndex = (tokens: number) => STAGES.filter(s => tokens >= s.from).length - 1
@@ -213,8 +453,6 @@ function feed(p: Pet, food: FoodId): { pet: Pet; text: string } {
 
 const statusLine = (p: Pet) =>
   `${stageOf(p.tokens)} · full ${p.hunger} · happy ${p.happiness} · poop ${p.poop} · coins ${p.coins}`
-
-const bar = (n: number) => '█'.repeat(Math.round(n / 10)).padEnd(10, '░')
 
 const mood = (p: Pet) => {
   if (p.hunger === 0) return 'starving'
@@ -372,7 +610,7 @@ function toSvg(grid: string[]): string {
     }),
   )
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${WIDTH} ${ROWS}" shape-rendering="crispEdges">${rects.join('')}</svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${grid[0].length} ${grid.length}" shape-rendering="crispEdges">${rects.join('')}</svg>`
 }
 
 // Runs one care action or one food. A food is eaten, and the rest are care.
@@ -655,12 +893,25 @@ export const register: Register = on => {
     const a = await read($, anim)
     const g = await read($, game)
     const p = decay(saved, now)
-    const track = Array.from({ length: 11 }, (_, i) =>
-      i === markerAt(a.tick - g.startTick) ? '█' : i >= 4 && i <= 6 ? '▓' : '·',
-    ).join('')
     const pose = poseOf(p, a, now)
     const bubble =
       a.tick < a.bubbleUntil && a.bubble ? a.bubble : pose === 'sleep' ? 'zzz' : null
+
+    // Every picture goes through here: a Raster on the terminal, an SVG elsewhere.
+    const icon = (key: string, art: string[], alt: string) =>
+      e.surface === 'terminal' ? (
+        <Raster key={key} columns={art[0].length} rows={art.length / 2} cells={toCells(art)} />
+      ) : (
+        <Svg source={toSvg(art)} alt={alt} />
+      )
+    // An icon above its button, as one column.
+    const cell = (key: string, art: string[], button: unknown) => (
+      <Box key={key} flexDirection="column">
+        {icon(key, art, key)}
+        {button}
+      </Box>
+    )
+    const marker = markerAt(a.tick - g.startTick)
 
     return (
       <Box flexDirection="column">
@@ -675,19 +926,21 @@ export const register: Register = on => {
         ) : (
           <Svg source={toSvg(compose(p, a, now))} alt={`slowpoke, ${mood(p)}`} />
         )}
+        {icon('stats', statArt(p), `full ${p.hunger}, happy ${p.happiness}`)}
         <Text dimColor>
-          {stageOf(p.tokens)} · {mood(p)} · full {bar(p.hunger)} · happy {bar(p.happiness)} · {p.tokens.toLocaleString()} tokens · {p.coins} coins
+          {stageOf(p.tokens)} · {mood(p)} · {p.tokens.toLocaleString()} tokens · {p.coins} coins
         </Text>
         {g.mode !== 'off' ? (
           g.mode === 'menu' ? (
             <Box>
-              <Button key="cups" label="Cups" onPress={() => startGame($, 'cups')} />
-              <Button key="rps" label="Rock Paper Scissors" onPress={() => startGame($, 'rps')} />
-              <Button key="timing" label="Timing" onPress={() => startGame($, 'timing')} />
+              {cell('cups', CUP, <Button key="cups" label="Cups" onPress={() => startGame($, 'cups')} />)}
+              {cell('rps', ROCK, <Button key="rps" label="Rock Paper Scissors" onPress={() => startGame($, 'rps')} />)}
+              {cell('timing', STOPWATCH, <Button key="timing" label="Timing" onPress={() => startGame($, 'timing')} />)}
               <Button key="back" label="Back" onPress={() => closeGames($)} />
             </Box>
           ) : g.mode === 'cups' ? (
             <Box>
+              {icon('cups-art', cupsArt(), 'three cups')}
               <Text>Which cup hides the berry?</Text>
               {CUPS.map((cup, i) => (
                 <Button key={cup} label={cup} onPress={() => pickCup($, i)} />
@@ -696,38 +949,42 @@ export const register: Register = on => {
             </Box>
           ) : g.mode === 'rps' ? (
             <Box>
-              {MOVES.map((move, i) => (
-                <Button key={move} label={move} onPress={() => throwMove($, i)} />
-              ))}
+              {MOVES.map((move, i) =>
+                cell(`move-${move}`, MOVE_ART[i], <Button key={move} label={move} onPress={() => throwMove($, i)} />),
+              )}
               <Button key="cancel" label="Cancel" onPress={() => closeGames($)} />
             </Box>
           ) : g.mode === 'shop' ? (
             <Box>
               <Text>{`shop · ${p.coins} coins`}</Text>
-              {ITEM_IDS.map(id => (
-                <Button key={id} label={shopLabel(p, id)} onPress={() => shopItem($, id)} />
-              ))}
+              {ITEM_IDS.map(id =>
+                cell(`shop-${id}`, SHOP_ART[id], <Button key={id} label={shopLabel(p, id)} onPress={() => shopItem($, id)} />),
+              )}
               <Button key="back" label="Back" onPress={() => closeGames($)} />
             </Box>
           ) : (
             <Box>
-              <Text>{track}</Text>
+              {icon('timing-art', timingArt(marker), 'timing track')}
               <Button key="stop" label="Stop!" onPress={() => stopTiming($)} />
               <Button key="cancel" label="Cancel" onPress={() => closeGames($)} />
             </Box>
           )
         ) : a.isMenuOpen ? (
           <Box>
-            {FOOD_IDS.map(id => (
-              <Button
-                key={id}
-                label={FOODS[id].label}
-                onPress={async () => {
-                  await update($, anim, prev => ({ ...prev, isMenuOpen: false }))
-                  await act($, id)
-                }}
-              />
-            ))}
+            {FOOD_IDS.map(id =>
+              cell(
+                `food-${id}`,
+                FOOD_ART[id],
+                <Button
+                  key={id}
+                  label={FOODS[id].label}
+                  onPress={async () => {
+                    await update($, anim, prev => ({ ...prev, isMenuOpen: false }))
+                    await act($, id)
+                  }}
+                />,
+              ),
+            )}
             <Button
               key="cancel"
               label="Cancel"
@@ -736,18 +993,26 @@ export const register: Register = on => {
           </Box>
         ) : (
           <Box>
-            <Button
-              key="feed"
-              label="Feed ▸"
-              onPress={() => update($, anim, prev => ({ ...prev, isMenuOpen: true }))}
-            />
-            <Button key="clean" label="Clean" onPress={() => act($, 'clean')} />
-            <Button key="play" label="Play ▸" onPress={() => openGames($)} />
-            <Button
-              key="shop"
-              label="Shop ▸"
-              onPress={() => update($, game, () => ({ ...NO_GAME, mode: 'shop' }))}
-            />
+            {cell(
+              'care-feed',
+              BERRY,
+              <Button
+                key="feed"
+                label="Feed ▸"
+                onPress={() => update($, anim, prev => ({ ...prev, isMenuOpen: true }))}
+              />,
+            )}
+            {cell('care-clean', SPARKLE, <Button key="clean" label="Clean" onPress={() => act($, 'clean')} />)}
+            {cell('care-play', BALL, <Button key="play" label="Play ▸" onPress={() => openGames($)} />)}
+            {cell(
+              'care-shop',
+              HAT,
+              <Button
+                key="shop"
+                label="Shop ▸"
+                onPress={() => update($, game, () => ({ ...NO_GAME, mode: 'shop' }))}
+              />,
+            )}
           </Box>
         )}
       </Box>
