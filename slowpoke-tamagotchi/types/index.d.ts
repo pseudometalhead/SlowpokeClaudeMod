@@ -18,7 +18,13 @@ export type Anim = {
   bubbleUntil: number
   /** When the person last did something, in ms since the epoch. */
   lastAct: number
+  /** The food being eaten, while `act` is `eat`. */
+  food: FoodId | null
+  /** Whether the food menu is showing in place of the care buttons. */
+  isMenuOpen: boolean
 }
+
+export type FoodId = 'berry' | 'apple' | 'honey' | 'lettuce' | 'lemon'
 
 declare module 'claude-code' {
   interface PluginState {

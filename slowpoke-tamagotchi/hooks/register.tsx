@@ -1,10 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { Hook, Register } from 'claude-code'
 
-import type { Anim, Pet } from '../types'
+import type { Anim, FoodId, Pet } from '../types'
 
 type Engine = Parameters<Hook<'turn.complete'>>[0]
-type Care = 'feed' | 'clean' | 'play'
+type Care = 'clean' | 'play'
 type Pose = 'idle' | 'blink' | 'happy' | 'grumpy' | 'sleep' | 'eat' | 'clean' | 'play' | 'evolve'
 
 const pet = atom({ plugin: 'slowpoke-tamagotchi', key: 'pet' } as const, null as Pet | null)
@@ -15,7 +15,20 @@ const anim = atom({ plugin: 'slowpoke-tamagotchi', key: 'anim' } as const, {
   bubble: null,
   bubbleUntil: 0,
   lastAct: 0,
+  food: null,
+  isMenuOpen: false,
 } as Anim)
+
+// The menu. Each food fills him by a different amount and changes his mood.
+const FOODS: Record<FoodId, { label: string; hunger: number; happy: number; colour: string; says: string }> = {
+  berry: { label: 'Berry', hunger: 40, happy: 3, colour: 'v', says: 'mmm, berry' },
+  apple: { label: 'Apple', hunger: 25, happy: 6, colour: 'r', says: 'crunch! apple' },
+  honey: { label: 'Honey', hunger: 15, happy: 15, colour: 'h', says: 'sticky... happy' },
+  lettuce: { label: 'Lettuce', hunger: 30, happy: 0, colour: 'a', says: 'crunch... healthy, I guess' },
+  lemon: { label: 'Lemon', hunger: 10, happy: -10, colour: 'l', says: '*puckers* ...sour!' },
+}
+const FOOD_IDS = Object.keys(FOODS) as FoodId[]
+const isFood = (word: string): word is FoodId => word in FOODS
 
 const STORE_KEY = 'pet'
 const MINUTE = 60_000
@@ -71,13 +84,17 @@ const PALETTE: Record<string, number> = {
   r: 0xff4d4d,
   x: 0xd9fbff,
   z: 0x9ad0ff,
+  v: 0x8e44ad,
+  a: 0x7ddc5a,
+  h: 0xf2b134,
+  l: 0xf7f060,
 }
 const DEFAULT_COLOR = 0x01000000
 
 const clamp = (n: number) => Math.max(0, Math.min(100, n))
 const stageIndex = (tokens: number) => STAGES.filter(s => tokens >= s.from).length - 1
 const stageOf = (tokens: number) => STAGES[stageIndex(tokens)].name
-const ACT = { feed: 'eat', clean: 'clean', play: 'play' } as const
+const ACT = { clean: 'clean', play: 'play' } as const
 
 const hatch = (now: number): Pet => ({
   hunger: 80,
@@ -111,16 +128,6 @@ function decay(p: Pet, now: number): Pet {
 }
 
 function care(p: Pet, what: Care): { pet: Pet; text: string } {
-  if (what === 'feed') {
-    if (p.hunger >= 100) {
-      return { pet: p, text: 'too full... *blink*' }
-    }
-    return {
-      pet: { ...p, hunger: clamp(p.hunger + 40), happiness: clamp(p.happiness + 3) },
-      text: 'mmm, berry',
-    }
-  }
-
   if (what === 'clean') {
     if (p.poop === 0) return { pet: p, text: 'nothing to clean... *smug*' }
     return {
@@ -133,6 +140,15 @@ function care(p: Pet, what: Care): { pet: Pet; text: string } {
   return {
     pet: { ...p, hunger: clamp(p.hunger - 5), happiness: clamp(p.happiness + 15) },
     text: 'wheee... slowly',
+  }
+}
+
+function feed(p: Pet, food: FoodId): { pet: Pet; text: string } {
+  if (p.hunger >= 100) return { pet: p, text: 'too full... *blink*' }
+  const f = FOODS[food]
+  return {
+    pet: { ...p, hunger: clamp(p.hunger + f.hunger), happiness: clamp(p.happiness + f.happy) },
+    text: f.says,
   }
 }
 
@@ -182,10 +198,11 @@ function compose(p: Pet, a: Anim, now: number): string[] {
   if (pose === 'eat') {
     const mouth = flip ? [6, 7, 8, 9] : [7, 8]
     for (const x of mouth) sprite[8][x] = 'k'
-    if (flip) {
-      sprite[6][13] = 'r'
-      sprite[6][14] = 'r'
-      sprite[7][14] = 'r'
+    if (flip && a.food) {
+      const colour = FOODS[a.food].colour
+      sprite[6][13] = colour
+      sprite[6][14] = colour
+      sprite[7][14] = colour
     }
   }
 
@@ -270,11 +287,13 @@ function toCells(grid: string[]): string {
   return new Uint8Array(words.buffer).toBase64()
 }
 
-async function act($: Engine, what: Care): Promise<string> {
+// Runs one care action or one food. A food is eaten, and the rest are care.
+async function act($: Engine, what: Care | FoodId): Promise<string> {
   const now = await $.clock.now()
   const out = {} as { pet: Pet; text: string }
   await update($, pet, prev => {
-    const done = care(decay(prev ?? hatch(now), now), what)
+    const base = decay(prev ?? hatch(now), now)
+    const done = isFood(what) ? feed(base, what) : care(base, what)
     out.pet = done.pet
     out.text = done.text
     return done.pet
@@ -282,8 +301,9 @@ async function act($: Engine, what: Care): Promise<string> {
   await $.store.set(STORE_KEY, out.pet)
   await update($, anim, a => ({
     ...a,
-    act: ACT[what],
+    act: isFood(what) ? 'eat' : ACT[what],
     actUntil: a.tick + 6,
+    food: isFood(what) ? what : null,
     bubble: out.text,
     bubbleUntil: a.tick + 12,
     lastAct: now,
@@ -334,9 +354,13 @@ export const register: Register = on => {
     return { text: `${statusLine(p)} · mood: ${mood(p)} · tokens ${p.tokens.toLocaleString()}` }
   })
 
-  on('command.run', { command: 'slowpoke-feed' }, async $ => ({
-    text: await act($, 'feed'),
-  }))
+  on('command.run', { command: 'slowpoke-feed' }, async ($, e) => {
+    const word = (e.args ?? '').trim().toLowerCase()
+    if (!word) return { text: `Foods: ${FOOD_IDS.join(', ')}. Try /slowpoke-feed apple` }
+    if (!isFood(word)) return { text: `No "${word}" on the menu. Foods: ${FOOD_IDS.join(', ')}` }
+
+    return { text: await act($, word) }
+  })
 
   on('command.run', { command: 'slowpoke-clean' }, async $ => ({
     text: await act($, 'clean'),
@@ -409,11 +433,35 @@ export const register: Register = on => {
         <Text dimColor>
           {stageOf(p.tokens)} · {mood(p)} · full {bar(p.hunger)} · happy {bar(p.happiness)} · {p.tokens.toLocaleString()} tokens
         </Text>
-        <Box>
-          <Button key="feed" label="Feed" onPress={() => act($, 'feed')} />
-          <Button key="clean" label="Clean" onPress={() => act($, 'clean')} />
-          <Button key="play" label="Play" onPress={() => act($, 'play')} />
-        </Box>
+        {a.isMenuOpen ? (
+          <Box>
+            {FOOD_IDS.map(id => (
+              <Button
+                key={id}
+                label={FOODS[id].label}
+                onPress={async () => {
+                  await update($, anim, prev => ({ ...prev, isMenuOpen: false }))
+                  await act($, id)
+                }}
+              />
+            ))}
+            <Button
+              key="cancel"
+              label="Cancel"
+              onPress={() => update($, anim, prev => ({ ...prev, isMenuOpen: false }))}
+            />
+          </Box>
+        ) : (
+          <Box>
+            <Button
+              key="feed"
+              label="Feed ▸"
+              onPress={() => update($, anim, prev => ({ ...prev, isMenuOpen: true }))}
+            />
+            <Button key="clean" label="Clean" onPress={() => act($, 'clean')} />
+            <Button key="play" label="Play" onPress={() => act($, 'play')} />
+          </Box>
+        )}
       </Box>
     )
   })

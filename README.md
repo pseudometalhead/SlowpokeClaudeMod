@@ -2,7 +2,7 @@
 
 A Claude Code mod that adds a slowpoke pet to your session.
 
-- **Feed** him (`/slowpoke-feed` or the Feed button), so he stays full.
+- **Feed** him from the menu (Berry, Apple, Honey, Lettuce or Lemon), or with `/slowpoke-feed <food>`. Each food fills him by a different amount and changes his mood: honey makes him happiest, lemon makes him sulk.
 - **Clean** up his poop (`/slowpoke-clean`). Poop piles up over time and makes him grumpy.
 - **Play** with him (`/slowpoke-play`). He needs some energy first.
 - **Evolve** as you spend tokens. Every turn adds its input, output and cache-write tokens to his growth: Baby, Slowpoke, Elder, Ancient.
